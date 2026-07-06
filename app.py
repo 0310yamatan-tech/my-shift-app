@@ -239,6 +239,9 @@ if validation_errors:
 # ------------------------------------------------------------------
 # 3. ソルバー本体
 # ------------------------------------------------------------------
+SOLVER_TIME_LIMIT_SECONDS = 20  # 1段階あたりの上限。CBCが応答しなくても最悪ここで打ち切られる
+
+
 def build_and_solve(days, members, n_a, n_b, n_off, preferred_off, max_consecutive, balance, fixed_rules, blocks,
                      enforce_fair_work=True, enforce_fair_b=True, fair_tol=1,
                      enforce_consecutive=True, enforce_preferred_off=True):
@@ -297,7 +300,7 @@ def build_and_solve(days, members, n_a, n_b, n_off, preferred_off, max_consecuti
     if enforce_fair_b:
         prob += max_b - min_b <= fair_tol
 
-    status = prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=SOLVER_TIME_LIMIT_SECONDS))
     return status, x, roles
 
 
@@ -320,8 +323,9 @@ def try_solve_with_relaxation(days, members, n_a, n_b, n_off, preferred_off, max
         status, x, roles = build_and_solve(
             days, members, n_a, n_b, n_off, preferred_off, max_consecutive, balance, fixed_rules, blocks, **stage
         )
-        ok = pulp.LpStatus[status] == "Optimal"
-        log.append((label, ok))
+        status_str = pulp.LpStatus[status]
+        ok = status_str == "Optimal"
+        log.append((label, ok, status_str))
         if ok:
             return status, x, roles, log
     return status, x, roles, log
@@ -352,11 +356,12 @@ if st.session_state.get("generated"):
     x_values = st.session_state["x_values"]
 
     with st.expander("🔍 求解の過程", expanded=False):
-        for label, ok in log:
-            st.write(("✅ " if ok else "❌ ") + label)
+        for label, ok, status_str in log:
+            suffix = "" if ok else f"（結果: {status_str}）"
+            st.write(("✅ " if ok else "❌ ") + label + suffix)
 
     if pulp.LpStatus[status] == "Optimal":
-        succeeded_label = next(label for label, ok in log if ok)
+        succeeded_label = next(label for label, ok, _ in log if ok)
         if succeeded_label.startswith("①"):
             st.success("🎉 曜日固定を反映した1ヶ月分の最適なシフトが完成しました！")
         else:
@@ -405,4 +410,14 @@ if st.session_state.get("generated"):
             save_balance(new_balance_preview)
             st.success("繰越残高を保存しました！")
     else:
-        st.error("❌ 指定された固定曜日が多すぎるか、条件が競合してシフトが作れませんでした。設定を見直してください。")
+        last_status_str = log[-1][2] if log else pulp.LpStatus[status]
+        if last_status_str not in ("Optimal", "Infeasible"):
+            st.error(
+                f"⏱️ 計算が制限時間（{SOLVER_TIME_LIMIT_SECONDS}秒/段階）以内に終わりませんでした"
+                f"（最終ステータス: {last_status_str}）。\n\n"
+                "これはスタッフ数や固定ルールが多く、組み合わせが複雑になっている場合に起こります。"
+                "人数を減らす、固定ルールを減らす、または`SOLVER_TIME_LIMIT_SECONDS`の値を"
+                "コード内で大きくして再度お試しください。"
+            )
+        else:
+            st.error("❌ 指定された固定曜日が多すぎるか、条件が競合してシフトが作れませんでした。設定を見直してください。")
