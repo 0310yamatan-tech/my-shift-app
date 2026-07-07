@@ -5,37 +5,34 @@ import json
 import os
 import jpholiday
 from datetime import datetime, timedelta
-from streamlit_javascript import st_javascript
 
 st.set_page_config(page_title="自動シフト作成アプリ", layout="wide")
 st.title("📅 自動シフト作成アプリ")
 st.write("スタッフ全員の4週間分のシフトをボタン一つで自動作成します。祝日は自動的に全員『お休み』になります。出来上がったシフトを後から手動で入れ替える（微調整する）ことも可能です。")
 
 # ------------------------------------------------------------------
-# 0. データをブラウザに保存・読み込みする仕組み（LocalStorage）
+# 0. 【安全版】サーバーの一時フォルダを使ってデータを保存する仕組み
 # ------------------------------------------------------------------
-def get_storage_key(members, prefix="balance"):
-    return f"shift_{prefix}_data_" + "_".join(sorted(members))
+import tempfile
+# サーバーの中に安全な保存用ファイルを作ります
+BALANCE_FILE = os.path.join(tempfile.gettempdir(), "shift_balance_v2.json")
+TABLE_FILE = os.path.join(tempfile.gettempdir(), "shift_table_v2.json")
 
-def load_from_browser(members, prefix="balance"):
-    if not members:
-        return None
-    key = get_storage_key(members, prefix)
-    js_code = f"localStorage.getItem('{key}')"
-    stored_value = st_javascript(js_code)
-    
-    if stored_value and stored_value != "None":
+def load_data_from_server(file_path):
+    if os.path.exists(file_path):
         try:
-            return json.loads(stored_value)
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
         except:
-            return None
-    return None
+            return {}
+    return {}
 
-def save_to_browser(members, data_dict, prefix="balance"):
-    key = get_storage_key(members, prefix)
-    json_str = json.dumps(data_dict, ensure_ascii=False)
-    js_code = f"localStorage.setItem('{key}', '{json_str}');"
-    st_javascript(js_code)
+def save_data_to_server(file_path, data_dict):
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data_dict, f, ensure_ascii=False, indent=2)
+    except:
+        pass
 
 # ------------------------------------------------------------------
 # 1. 基本設定
@@ -157,17 +154,16 @@ max_consecutive = st.slider("連続で勤務してよい上限日数", min_value
 days_per_week = len(DAYS_BASE_WEEK)
 blocks = [DAYS[i*days_per_week:(i+1)*days_per_week] for i in range(N_WEEKS)]
 
-# ズレ（バランス）をブラウザから読み込み
+# ズレ（バランス）の読み込み
 st.subheader("📊 前回までの出勤数のズレ（繰越残高）")
-raw_balance = load_from_browser(members, "balance")
-if raw_balance is None: raw_balance = {}
+raw_balance = load_data_from_server(BALANCE_FILE)
 balance = {m: float(raw_balance.get(m, 0.0)) for m in members}
 bal_df = pd.DataFrame([{"名前": m, "これまでのズレ（日分）": round(balance[m], 2)} for m in members]).set_index("名前")
 st.dataframe(bal_df, use_container_width=True)
 
 if st.button("🗑️ 過去の出勤ズレ（繰越残高）と記憶されたシフトをすべてリセットする"):
-    save_to_browser(members, {}, "balance")
-    save_to_browser(members, {}, "table")
+    save_data_to_server(BALANCE_FILE, {})
+    save_data_to_server(TABLE_FILE, {})
     st.success("すべての記憶データをリセットしました。ページを再読み込み（リフレッシュ）してください。")
     st.stop()
 
@@ -293,9 +289,9 @@ def try_solve_with_relaxation(days, holidays, members, n_a, n_b, n_off, preferre
 if "shift_dict" not in st.session_state: st.session_state["shift_dict"] = None
 if "snapshot_members" not in st.session_state: st.session_state["snapshot_members"] = []
 
-# ーーー 💡【新機能】リフレッシュした時、ブラウザに保存された過去のシフトがあれば自動で復活させる ーーー
-if st.session_state["shift_dict"] is None and len(members) > 0:
-    saved_table = load_from_browser(members, "table")
+# 【安全対策】リフレッシュした時、サーバー側に一時保存されたシフトがあれば自動復活
+if st.session_state["shift_dict"] is None:
+    saved_table = load_data_from_server(TABLE_FILE)
     if saved_table:
         st.session_state["shift_dict"] = saved_table
         st.session_state["snapshot_members"] = list(members)
@@ -316,8 +312,7 @@ if not validation_errors:
                         elif x[d, m, "B"].varValue == 1: s_dict[d][m] = "🔵 B"
                         else: s_dict[d][m] = "休"
                 st.session_state["shift_dict"] = s_dict
-                # 作った直後に一度ブラウザへ仮保存
-                save_to_browser(members, s_dict, "table")
+                save_data_to_server(TABLE_FILE, s_dict) # 自動保存
                 st.success("🎉 シフト表が完成しました！画面の下に進んで確認してください。")
             else:
                 st.error("❌ 条件が厳しすぎるためシフトを作れませんでした。お休み希望や曜日固定を少し減らしてください。")
@@ -332,7 +327,6 @@ if st.session_state["shift_dict"] is not None:
     st.caption("「指定した日」の「スタッフ2人」の役割を、ピンポイントでその場でガチャンと入れ替えることができます。")
     swap_col1, swap_col2, swap_col3, swap_btn = st.columns([2, 2, 2, 1])
     with swap_col1:
-        # 日付リストをセーフティに取得
         valid_days = [d for d in DAYS if d in s_dict]
         if not valid_days: valid_days = list(s_dict.keys())
         target_day = st.selectbox("入れ替えたい日を選択してください", options=valid_days)
@@ -348,8 +342,7 @@ if st.session_state["shift_dict"] is not None:
             else:
                 s_dict[target_day][staff_1], s_dict[target_day][staff_2] = s_dict[target_day][staff_2], s_dict[target_day][staff_1]
                 st.session_state["shift_dict"] = s_dict
-                # 🔄 手動で入れ替えた結果も、即座にブラウザへ自動上書き保存！
-                save_to_browser(current_members, s_dict, "table")
+                save_data_to_server(TABLE_FILE, s_dict) # 手動変更も自動保存
                 st.toast(f"📢 {target_day} の 【{staff_1}】さんと【{staff_2}】さんのシフトを入れ替えました！")
 
     # シフト表作成
@@ -381,12 +374,11 @@ if st.session_state["shift_dict"] is not None:
     st.dataframe(pd.DataFrame(preview_rows).set_index("名前"), use_container_width=True)
 
     if st.button("✅ このシフト結果で確定して、出勤数のズレを次回に引き継ぐ"):
-        save_to_browser(current_members, new_balance_preview, "balance")
-        # 確定したシフト表も永続化
-        save_to_browser(current_members, s_dict, "table")
-        st.success("今回の出勤データとシフト表を保存しました！これで画面を閉じたりリフレッシュしたりしても、すべてのデータが残ります。")
+        save_data_to_server(BALANCE_FILE, new_balance_preview)
+        save_data_to_server(TABLE_FILE, s_dict)
+        st.success("今回の出勤データとシフト表を保存しました！これで画面をリフレッシュしてもデータが残ります。")
 
-    # ーーー 💾 【自動ファイル名機能つき】ダウンロードボタン ーーー
+    # ーーー 💾 ダウンロードボタン ーーー
     st.markdown("---")
     st.subheader("💾 5. 完成したシフトをパソコンに保存する")
     st.caption("ボタンを押すと、今画面に表示されているシフト表をパソコンに保存できます。これで画面を閉じても安心です！")
