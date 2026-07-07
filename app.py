@@ -349,8 +349,35 @@ if not validation_errors:
             (d, m, r): x[d, m, r].varValue for d in DAYS for m in members for r in ["A", "B", "Off"]
         }
         st.session_state["log"] = log
+        # --- この結果を作った時点の設定をまるごと保存する（表示中に設定が変わってもズレないように） ---
+        st.session_state["snapshot"] = {
+            "DAYS": list(DAYS),
+            "DAYS_BASE": list(DAYS_BASE),
+            "N_WEEKS": N_WEEKS,
+            "members": list(members),
+            "n_staff": int(n_staff),
+            "total_workdays": total_workdays,
+            "balance": dict(balance),
+        }
 
 if st.session_state.get("generated"):
+    snap = st.session_state["snapshot"]
+    DAYS_disp = snap["DAYS"]
+    DAYS_BASE_disp = snap["DAYS_BASE"]
+    N_WEEKS_disp = snap["N_WEEKS"]
+    members_disp = snap["members"]
+    n_staff_disp = snap["n_staff"]
+    total_workdays_disp = snap["total_workdays"]
+    balance_disp = snap["balance"]
+
+    # 表示中の設定（現在の画面の値）と、シフトを作った時点の設定がズレていたら注意喚起
+    if DAYS_disp != list(DAYS) or members_disp != list(members):
+        st.warning(
+            "⚠️ 下に表示されているシフトは、**作成した時点の設定**のままです。"
+            "その後スタッフ人数や曜日設定を変更された場合、最新の設定を反映するには"
+            "もう一度「シフトを自動作成する」を押してください。"
+        )
+
     log = st.session_state["log"]
     status = st.session_state["status"]
     x_values = st.session_state["x_values"]
@@ -369,21 +396,24 @@ if st.session_state.get("generated"):
 
         shift_data = []
         work_days_map = {}
-        for m in members:
+        for m in members_disp:
             row = {"名前": m}
             work_days = 0
             b_days = 0
-            for d in DAYS:
-                display_day = d.replace("_", " ")
-                if x_values[d, m, "A"] == 1:
-                    row[display_day] = "🔴 A"
+            for d in DAYS_disp:
+                # スナップショットのキーと必ず一致するので通常は問題ないが、
+                # 念のための保険として .get(..., 0) にしておく
+                is_a = x_values.get((d, m, "A"), 0) == 1
+                is_b = x_values.get((d, m, "B"), 0) == 1
+                if is_a:
+                    row[d] = "🔴 A"
                     work_days += 1
-                elif x_values[d, m, "B"] == 1:
-                    row[display_day] = "🔵 B"
+                elif is_b:
+                    row[d] = "🔵 B"
                     work_days += 1
                     b_days += 1
                 else:
-                    row[display_day] = "休"
+                    row[d] = "休"
             row["出勤日数（合計）"] = work_days
             row["B担当（合計）"] = b_days
             work_days_map[m] = work_days
@@ -391,18 +421,20 @@ if st.session_state.get("generated"):
 
         df = pd.DataFrame(shift_data).set_index("名前")
 
-        for w in range(1, N_WEEKS + 1):
+        for w in range(1, N_WEEKS_disp + 1):
             st.subheader(f"📅 第 {w} 週目 のシフト")
-            week_cols = [f"{w}週目 {d}" for d in DAYS_BASE]
-            st.dataframe(df[week_cols + ["出勤日数（合計）", "B担当（合計）"]], use_container_width=True)
+            week_cols = [f"{w}週目_{d}" for d in DAYS_BASE_disp]
+            sub_df = df[week_cols + ["出勤日数（合計）", "B担当（合計）"]].copy()
+            sub_df.columns = DAYS_BASE_disp + ["出勤日数（合計）", "B担当（合計）"]
+            st.dataframe(sub_df, use_container_width=True)
 
-        period_avg = total_workdays / n_staff
-        new_balance_preview = {m: round(balance[m] + work_days_map[m] - period_avg, 3) for m in members}
+        period_avg = total_workdays_disp / n_staff_disp
+        new_balance_preview = {m: round(balance_disp[m] + work_days_map[m] - period_avg, 3) for m in members_disp}
 
         st.subheader("📈 今回反映後の繰越残高（プレビュー）")
         preview_df = pd.DataFrame(
-            [{"名前": m, "現在の残高": round(balance[m], 2), "今回の出勤": work_days_map[m],
-              "更新後の残高": new_balance_preview[m]} for m in members]
+            [{"名前": m, "現在の残高": round(balance_disp[m], 2), "今回の出勤": work_days_map[m],
+              "更新後の残高": new_balance_preview[m]} for m in members_disp]
         ).set_index("名前")
         st.dataframe(preview_df, use_container_width=True)
 
