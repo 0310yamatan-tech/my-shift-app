@@ -309,12 +309,6 @@ if not validation_errors:
             else:
                 st.error("❌ シフトの作成に失敗しました。設定を見直してください。")
 
-# 求解過程の表示
-if st.session_state["log"]:
-    with st.expander("🔍 求解の過程（段階的緩和アルゴリズム）", expanded=False):
-        for label, ok, status_str in st.session_state["log"]:
-            st.write(("✅ " if ok else "❌ ") + label + ("" if ok else f"（不可: {status_str}）"))
-
 # 完成したシフトの操作パネル
 if st.session_state["shift_dict"] is not None:
     s_dict = st.session_state["shift_dict"]
