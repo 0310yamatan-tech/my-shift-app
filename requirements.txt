@@ -1,3 +1,4 @@
 streamlit
 pulp==2.8.0
 pandas
+jpholiday
