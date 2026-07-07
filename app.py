@@ -269,4 +269,175 @@ def validate_fixed_rules(members, days_base, fixed_rules, day_reqs, max_consecut
             if len(fixed_a) > req["A"]:
                 errors.append(f"「{d}曜日」に『🔴洗浄エリア』が {len(fixed_a)}人 指定されていますが、最大枠は {req['A']}人 です。")
             if len(fixed_b) > req["B"]:
-                errors.append(f"「{d}曜日」に『
+                errors.append(f"「{d}曜日」に『🔵クリーンエリア』が {len(fixed_b)}人 指定されていますが、最大枠は {req['B']}人 です。")
+            if len(fixed_off) > req["Off"]:
+                errors.append(f"「{d}曜日」に『休 固定』が {len(fixed_off)}人 指定されていますが、上限は {req['Off']}人 です。")
+    return errors
+
+validation_errors = validate_fixed_rules(members, DAYS_BASE_WEEK, fixed_rules, day_requirements, int(max_consecutive), blocks)
+if validation_errors:
+    st.subheader("🚫 入力内容に矛盾があります")
+    for e in validation_errors: st.error(e)
+
+# ------------------------------------------------------------------
+# 3. 計算エンジン & 条件の段階的緩和
+# ------------------------------------------------------------------
+def build_and_solve(days, holidays, members, day_reqs, preferred_off, max_consecutive, balance, fixed_rules, blocks,
+                    enforce_fair_work=True, fair_tol=1, enforce_consecutive=True, enforce_preferred_off=True):
+    roles = ["A", "B", "Off"]
+    prob = pulp.LpProblem("Shift_Scheduling", pulp.LpMinimize)
+    x = pulp.LpVariable.dicts("x", ((d, m, r) for d in days for m in members for r in roles), cat="Binary")
+
+    max_work = pulp.LpVariable("max_work", cat="Continuous")
+    min_work = pulp.LpVariable("min_work", cat="Continuous")
+    prob += (max_work - min_work)
+
+    for d in days:
+        req = day_reqs[d]
+        prob += pulp.lpSum(x[d, m, "A"] for m in members) == req["A"]
+        prob += pulp.lpSum(x[d, m, "B"] for m in members) == req["B"]
+        prob += pulp.lpSum(x[d, m, "Off"] for m in members) == req["Off"]
+        
+        if d not in holidays:
+            day_name = d.split("_")[1].split("(")[0]
+            for m in members:
+                if day_name in fixed_rules[m]:
+                    prob += x[d, m, fixed_rules[m][day_name]] == 1
+
+        for m in members:
+            prob += pulp.lpSum(x[d, m, r] for r in roles) == 1
+
+    for m in members:
+        total_work = pulp.lpSum(x[d, m, "A"] + x[d, m, "B"] for d in days if d not in holidays)
+        adjusted_work = total_work + balance.get(m, 0.0)
+        prob += adjusted_work <= max_work
+        prob += adjusted_work >= min_work
+
+        if enforce_consecutive:
+            for block in blocks:
+                for i in range(len(block) - max_consecutive):
+                    window = block[i:i + max_consecutive + 1]
+                    prob += pulp.lpSum(x[d, m, "A"] + x[d, m, "B"] for d in window) <= max_consecutive
+
+        if enforce_preferred_off:
+            for d in preferred_off.get(m, set()):
+                day_of_week = d.split("_")[1].split("(")[0]
+                if fixed_rules[m].get(day_of_week) in ("A", "B"):
+                    continue
+                prob += x[d, m, "Off"] == 1
+
+    if enforce_fair_work:
+        prob += max_work - min_work <= fair_tol
+
+    status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=15))
+    return status, x
+
+def try_solve_with_relaxation(days, holidays, members, day_reqs, preferred_off, max_consecutive, balance, fixed_rules, blocks):
+    stages = [
+        dict(label="① すべての条件を完璧に満たすシフト", enforce_fair_work=True, fair_tol=1, enforce_consecutive=True, enforce_preferred_off=True),
+        dict(label="② 全員の出勤数の差を少し広げて作ったシフト", enforce_fair_work=True, fair_tol=2, enforce_consecutive=True, enforce_preferred_off=True),
+        dict(label="③ 希望休を一部スキップしたシフト", enforce_fair_work=True, fair_tol=2, enforce_consecutive=True, enforce_preferred_off=False),
+        dict(label="④ 連続勤務の上限日数を一時的に無視して作ったシフト", enforce_fair_work=True, fair_tol=2, enforce_consecutive=False, enforce_preferred_off=False),
+        dict(label="⑤ 出勤数の公平さを努力目標に落としたシフト", enforce_fair_work=False, fair_tol=999, enforce_consecutive=False, enforce_preferred_off=False),
+    ]
+    for stage in stages:
+        label = stage.pop("label")
+        status, x = build_and_solve(days, holidays, members, day_reqs, preferred_off, max_consecutive, balance, fixed_rules, blocks, **stage)
+        if pulp.LpStatus[status] == "Optimal": return status, x
+    return status, None
+
+# ------------------------------------------------------------------
+# 4. 実行 & 表示 & 手動入れ替え
+# ------------------------------------------------------------------
+if "shift_dict" not in st.session_state: st.session_state["shift_dict"] = None
+if "snapshot_members" not in st.session_state: st.session_state["snapshot_members"] = []
+
+if st.session_state["shift_dict"] is None:
+    saved_table = load_data_from_server(TABLE_FILE)
+    if saved_table:
+        st.session_state["shift_dict"] = saved_table
+        st.session_state["snapshot_members"] = list(members)
+
+if not validation_errors:
+    if st.button("✨ 1ヶ月分のシフトを自動作成する", type="primary"):
+        with st.spinner("コンピューターが一番良いシフトを計算しています..."):
+            status, x = try_solve_with_relaxation(DAYS, HOLIDAYS, members, day_requirements, preferred_off, int(max_consecutive), balance, fixed_rules, blocks)
+            
+            if x is not None:
+                st.session_state["snapshot_members"] = list(members)
+                s_dict = {}
+                for d in DAYS:
+                    s_dict[d] = {}
+                    for m in members:
+                        if d in HOLIDAYS: s_dict[d][m] = "休(祝)"
+                        elif x[d, m, "A"].varValue == 1: s_dict[d][m] = "🔴 洗浄エリア"
+                        elif x[d, m, "B"].varValue == 1: s_dict[d][m] = "🔵 クリーンエリア"
+                        else: s_dict[d][m] = "休"
+                st.session_state["shift_dict"] = s_dict
+                save_data_to_server(TABLE_FILE, s_dict)
+                st.success("🎉 シフト表が完成しました！")
+            else:
+                st.error("❌ 条件が厳しすぎるためシフトを作れませんでした。")
+
+# シフト表示パネル
+if st.session_state["shift_dict"] is not None:
+    s_dict = st.session_state["shift_dict"]
+    current_members = st.session_state["snapshot_members"]
+
+    st.markdown("---")
+    st.subheader("🔄 シフトの手動入れ替え・微調整")
+    swap_col1, swap_col2, swap_col3, swap_btn = st.columns([2, 2, 2, 1])
+    with swap_col1:
+        valid_days = [d for d in DAYS if d in s_dict]
+        if not valid_days: valid_days = list(s_dict.keys())
+        target_day = st.selectbox("入れ替えたい日を選択してください", options=valid_days)
+    with swap_col2:
+        staff_1 = st.selectbox("入れ替えるスタッフ ①", options=current_members, key="s1")
+    with swap_col3:
+        staff_2 = st.selectbox("入れ替えるスタッフ ②", options=current_members, key="s2")
+    with swap_btn:
+        st.write("")
+        if st.button("🔄 この2人を入れ替える", use_container_width=True):
+            if staff_1 != staff_2:
+                s_dict[target_day][staff_1], s_dict[target_day][staff_2] = s_dict[target_day][staff_2], s_dict[target_day][staff_1]
+                st.session_state["shift_dict"] = s_dict
+                save_data_to_server(TABLE_FILE, s_dict)
+                st.toast(f"📢 入れ替えを保存しました！")
+
+    shift_data = []
+    work_days_map = {m: 0 for m in current_members}
+    for m in current_members:
+        row = {"名前": m}
+        for d in DAYS:
+            val = s_dict.get(d, {}).get(m, "休")
+            row[d] = val
+            if val in ("🔴 洗浄エリア", "🔵 クリーンエリア"): work_days_map[m] += 1
+        row["実際の出勤日数"] = work_days_map[m]
+        shift_data.append(row)
+    df = pd.DataFrame(shift_data).set_index("名前")
+
+    st.markdown("---")
+    st.subheader("📋 完成したシフト表")
+    for w in range(1, N_WEEKS + 1):
+        st.markdown(f"#### 📅 第 {w} 週目")
+        week_cols = [d for d in DAYS if d.startswith(f"{w}週目_") and d in df.columns]
+        st.dataframe(df[week_cols + ["実際の出勤日数"]], use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("📈 更新後の『出勤ズレ残高』")
+    period_avg = total_workdays / len(current_members) if len(current_members) > 0 else 0
+    new_balance_preview = {m: round(balance.get(m, 0.0) + work_days_map[m] - period_avg, 3) for m in current_members}
+    preview_rows = [{"名前": m, "これまでのズレ": round(balance.get(m, 0.0), 2), "今回の合計出勤数": work_days_map[m], "更新後の新しいズレ": new_balance_preview[m]} for m in current_members]
+    st.dataframe(pd.DataFrame(preview_rows).set_index("名前"), use_container_width=True)
+
+    if st.button("✅ このシフト結果で確定して、出勤数のズレを次回に引き継ぐ"):
+        save_data_to_server(BALANCE_FILE, new_balance_preview)
+        save_data_to_server(TABLE_FILE, s_dict)
+        st.success("確定データを保存しました！")
+
+    st.markdown("---")
+    st.subheader("💾 5. 完成したシフトをパソコンに保存する")
+    shift_month = start_date.strftime('%m')
+    display_month = int(shift_month) 
+    csv_data = df.to_csv().encode('utf-8-sig')
+    st.download_button(label=f"📥 {display_month}月のシフト表をダウンロードする", data=csv_data, file_name=f"{display_month}月のシフト.csv", mime="text/csv")
