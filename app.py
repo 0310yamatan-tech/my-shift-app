@@ -364,3 +364,18 @@ if st.session_state["shift_dict"] is not None:
     if st.button("✅ この結果を確定して繰越残高を保存する"):
         save_balance(new_balance_preview)
         st.success("繰越残高を保存しました！")
+# ーーー 💾 【新機能】エクセル（CSV）としてダウンロードするボタン ーーー
+    st.markdown("---")
+    st.subheader("💾 5. 完成したシフトをパソコンに保存する")
+    st.caption("ボタンを押すと、今画面に表示されているシフト表をエクセル等で開けるファイル（CSV）としてダウンロードできます。これで画面を閉じても安心です！")
+    
+    # ダウンロード用のデータに変換
+    csv_data = df.to_csv().encode('utf-8-sig') # 文字化けしないように設定
+    
+    st.download_button(
+        label="📥 完成したシフト表をダウンロードする",
+        data=csv_data,
+        file_name=f"確定シフト_{start_date.strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+        type="secondary"
+    )
