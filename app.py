@@ -74,9 +74,9 @@ st.info(f"💡 選択された期間内の祝日(自動休み): {', '.join([k fo
 
 col3, col4 = st.columns(2)
 with col3:
-    n_a = st.number_input("A（複数人作業）の人数", min_value=1, max_value=int(n_staff), value=3, step=1)
+    n_a = st.number_input("A 複数人作業の人数", min_value=1, max_value=int(n_staff), value=3, step=1)
 with col4:
-    n_b = st.number_input("B（少人数作業）の人数", min_value=0, max_value=int(n_staff), value=1, step=1)
+    n_b = st.number_input("B 少人数作業の人数", min_value=0, max_value=int(n_staff), value=1, step=1)
 
 n_work = n_a + n_b
 if n_work > n_staff:
@@ -112,14 +112,14 @@ for i in range(int(n_staff)):
         members.append(name.strip())
 
 if len(members) != len(set(members)):
-    st.error("⚠️ 名前が重複しています。名前は全員分ユニークにしてください。")
+    st.error("⚠️ 名前が重複しています。")
     st.stop()
 if any(m == "" for m in members):
     st.error("⚠️ 空欄の名前があります。全員分入力してください。")
     st.stop()
 
 # --- 📌 曜日固定枠の設定 ---
-st.subheader("📌 曜日固定の設定 (任意)")
+st.subheader("📌 曜日固定の設定")
 fixed_rules = {m: {} for m in members}
 with st.expander("各スタッフの曜日固定を設定する", expanded=False):
     for m in members:
@@ -133,7 +133,7 @@ with st.expander("各スタッフの曜日固定を設定する", expanded=False
                 elif choice == "休 固定": fixed_rules[m][d] = "Off"
 
 # --- 🙅 希望休の設定 ---
-st.subheader("🙅 希望休（任意）")
+st.subheader("🙅 希望休")
 preferred_off = {m: set() for m in members}
 with st.expander("特定の曜日をすべて希望休にする（上記で『休 固定』にした場合はチェック不要です）", expanded=False):
     for m in members:
