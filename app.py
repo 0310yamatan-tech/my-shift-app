@@ -6,8 +6,8 @@ import os
 import jpholiday
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="自動シフト作成アプリ (完全修復版)", layout="wide")
-st.title("📅 自動シフト作成アプリ (全機能統合・完全版)")
+st.set_page_config(page_title="自動シフト作成アプリ ", layout="wide")
+st.title("📅 自動シフト作成アプリ")
 st.write("スタッフから出勤者を選び、4週間分のシフトを自動作成します。祝日自動休み、希望休、曜日固定、事前バリデーション、段階的緩和、手動入れ替えのすべてが搭載されています。")
 
 import tempfile
